@@ -16,8 +16,6 @@ app.use(express.json());
 
 const key = process.env.BYTEZ_API_KEY;
 
-console.log(key)
-
 if (!key) {
   console.error("BYTEZ_API_KEY not found");
   process.exit(1);
@@ -59,16 +57,12 @@ function calculateStreaks(days) {
   });
 
   let current = 0;
-
   for (let i = days.length - 1; i >= 0; i--) {
     if (days[i].contributions > 0) current++;
     else break;
   }
 
-  return {
-    longestStreak: longest,
-    currentStreak: current,
-  };
+  return { longestStreak: longest, currentStreak: current };
 }
 
 /* -------------------- */
@@ -108,21 +102,21 @@ app.post("/github", async (req, res) => {
 
       const gqlRes = await githubAPI.post("/graphql", {
         query: `
-        query {
-          user(login: "${username}") {
-            contributionsCollection(from: "${from}", to: "${to}") {
-              contributionCalendar {
-                totalContributions
-                weeks {
-                  contributionDays {
-                    date
-                    contributionCount
+          query {
+            user(login: "${username}") {
+              contributionsCollection(from: "${from}", to: "${to}") {
+                contributionCalendar {
+                  totalContributions
+                  weeks {
+                    contributionDays {
+                      date
+                      contributionCount
+                    }
                   }
                 }
               }
             }
           }
-        }
         `,
       });
 
@@ -139,7 +133,6 @@ app.post("/github", async (req, res) => {
       yearlyContributions[year] = calendar.totalContributions || 0;
 
       const weeks = calendar.weeks || [];
-
       weeks.forEach((week) => {
         week.contributionDays.forEach((day) => {
           dailyContributions.push({
@@ -153,25 +146,39 @@ app.post("/github", async (req, res) => {
     const streakData = calculateStreaks(dailyContributions);
 
     /* -------------------- */
-    /* Fetch Repositories */
+    /* Fetch Repositories & README */
     /* -------------------- */
 
     const reposRes = await githubAPI.get(
       `/users/${username}/repos?per_page=100&sort=updated`
     );
-
     const reposData = reposRes.data;
 
-    const repos = reposData.map((repo) => ({
-      name: repo.name,
-      description: repo.description,
-      stars: repo.stargazers_count,
-      forks: repo.forks_count,
-      language: repo.language,
-      createdAt: repo.created_at,
-      updatedAt: repo.updated_at,
-      repoUrl: repo.html_url,
-    }));
+    const repos = await Promise.all(
+      reposData.slice(0, 20).map(async (repo) => {
+        let readme = "No README";
+        try {
+          const readmeRes = await githubAPI.get(
+            `/repos/${username}/${repo.name}/readme`
+          );
+          readme = Buffer.from(readmeRes.data.content, "base64").toString("utf8");
+        } catch {
+          // ignore if README not found
+        }
+
+        return {
+          name: repo.name,
+          description: repo.description,
+          stars: repo.stargazers_count,
+          forks: repo.forks_count,
+          language: repo.language,
+          createdAt: repo.created_at,
+          updatedAt: repo.updated_at,
+          repoUrl: repo.html_url,
+          readme,
+        };
+      })
+    );
 
     /* -------------------- */
     /* Final User Object */
@@ -230,13 +237,13 @@ Current Streak: ${user.stats.currentStreak}
 Longest Streak: ${user.stats.longestStreak}
 
 Repositories:
-${JSON.stringify(repos.slice(0, 20))}
+${JSON.stringify(repos)}
 
 Generate a professional recruiter-ready summary.
 `,
         },
       ]);
-console.log(result)
+
       aiDescription =
         result?.output?.content?.trim() ||
         result?.output?.[0]?.content?.trim() ||
@@ -252,11 +259,7 @@ console.log(result)
     });
   } catch (err) {
     console.error("Server error:", err.message);
-
-    res.status(500).json({
-      status: false,
-      error: err.message,
-    });
+    res.status(500).json({ status: false, error: err.message });
   }
 });
 
